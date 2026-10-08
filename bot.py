@@ -24,7 +24,6 @@ DEFAULT_PREFIX = "!"
 
 log = logging.getLogger("reaction_roles")
 
-
 class PrefixInteractionAdapter:
     """A prefix context minimális Interaction-szerű adaptere."""
 
@@ -42,7 +41,11 @@ class ReactionRoleBot(commands.Bot):
     """Egyszerű, egy szerverre szabott reaction role bot."""
 
     def __init__(
-        self, config: BotConfig, config_path: Path, command_prefix: str
+        self,
+        config: BotConfig,
+        config_path: Path,
+        command_prefix: str,
+        allowed_user_ids: frozenset[int],
     ) -> None:
         intents = discord.Intents.none()
         intents.guilds = True
@@ -60,19 +63,43 @@ class ReactionRoleBot(commands.Bot):
         self.config = config
         self.config_path = config_path
         self.command_prefix_text = command_prefix
+        self.allowed_user_ids = allowed_user_ids
         self._startup_checked = False
         self.reaction_role_group = app_commands.Group(
             name="reaction-role",
             description="Reaction role beállítása",
+            guild_only=True,
         )
         self._register_commands()
         self._register_prefix_commands()
 
+    def is_allowed_user(self, user_id: int) -> bool:
+        """Csak az ALLOWED_USER_IDS-ben megadott felhasználók kezelhetik a botot."""
+        return user_id in self.allowed_user_ids
+
     def _register_commands(self) -> None:
+        allowed_users_only = app_commands.check(
+            lambda interaction: self.is_allowed_user(interaction.user.id)
+        )
+
+        @self.tree.error
+        async def on_app_command_error(
+            interaction: discord.Interaction, error: app_commands.AppCommandError
+        ) -> None:
+            if isinstance(error, app_commands.CheckFailure):
+                message = "Ezt a parancsot nem használhatod."
+            else:
+                log.error("Slash parancshiba (%s): %s", interaction.command, error)
+                message = "Hiba történt a parancs végrehajtásakor."
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+
         @self.reaction_role_group.command(
             name="add", description="Emojihoz role-t rendel egy üzeneten"
         )
-        @app_commands.checks.has_permissions(manage_guild=True)
+        @allowed_users_only
         async def add_reaction_role(
             interaction: discord.Interaction,
             message_id: str,
@@ -87,7 +114,7 @@ class ReactionRoleBot(commands.Bot):
         @self.reaction_role_group.command(
             name="remove", description="Eltávolít egy emoji-role párost"
         )
-        @app_commands.checks.has_permissions(manage_guild=True)
+        @allowed_users_only
         async def remove_reaction_role(
             interaction: discord.Interaction, message_id: str, emoji: str
         ) -> None:
@@ -96,7 +123,7 @@ class ReactionRoleBot(commands.Bot):
         @self.reaction_role_group.command(
             name="reload", description="Újraolvassa a config.json-t"
         )
-        @app_commands.checks.has_permissions(manage_guild=True)
+        @allowed_users_only
         async def reload_reaction_roles(
             interaction: discord.Interaction,
         ) -> None:
@@ -183,8 +210,8 @@ class ReactionRoleBot(commands.Bot):
         if ctx.guild is None:
             await ctx.send("Ezt a parancsot Discord szerveren használd.")
             return False
-        if not ctx.author.guild_permissions.manage_guild:
-            await ctx.send("Ehhez a parancshoz Manage Server jogosultság szükséges.")
+        if not self.is_allowed_user(ctx.author.id):
+            await ctx.send("Ezt a parancsot nem használhatod.")
             return False
         return True
 
@@ -290,11 +317,13 @@ class ReactionRoleBot(commands.Bot):
             )
             return
 
-        message = await self._find_message(guild, message_id)
+        message = await self._find_message(guild, message_id, interaction.channel)
 
         if message is None:
             await interaction.response.send_message(
-                "Nem találom az üzenetet ebben a csatornában.", ephemeral=True
+                "Nem találom az üzenetet a szerver egyik általam látható "
+                "csatornájában sem.",
+                ephemeral=True,
             )
             return
 
@@ -457,10 +486,41 @@ class ReactionRoleBot(commands.Bot):
             total,
         )
 
+    @staticmethod
+    def _searchable_channels(
+        guild: discord.Guild, preferred: object | None = None
+    ) -> list[discord.abc.Messageable]:
+        """A szerver összes olyan csatornája, ahol üzenet lehet.
+
+        Szöveges, hang- és stage csatornák chatje, valamint az aktív threadek
+        (fórumposztok is). Ha van ``preferred`` csatorna (ahol a parancsot
+        kiadták), azzal kezd, így az ott lévő üzenetet azonnal megtalálja.
+        """
+        channels: list[discord.abc.Messageable] = []
+        if isinstance(preferred, discord.abc.Messageable) and not isinstance(
+            preferred, (discord.DMChannel, discord.GroupChannel)
+        ):
+            channels.append(preferred)
+        channels.extend(guild.text_channels)
+        channels.extend(guild.voice_channels)
+        channels.extend(guild.stage_channels)
+        channels.extend(guild.threads)
+
+        seen: set[int] = set()
+        unique: list[discord.abc.Messageable] = []
+        for channel in channels:
+            if channel.id not in seen:
+                seen.add(channel.id)
+                unique.append(channel)
+        return unique
+
     async def _find_message(
-        self, guild: discord.Guild, message_id: int
+        self,
+        guild: discord.Guild,
+        message_id: int,
+        preferred_channel: object | None = None,
     ) -> discord.Message | None:
-        for channel in guild.text_channels:
+        for channel in self._searchable_channels(guild, preferred_channel):
             try:
                 return await channel.fetch_message(message_id)
             except discord.NotFound:
@@ -489,7 +549,7 @@ class ReactionRoleBot(commands.Bot):
             if message is None:
                 log.warning(
                     "A(z) %s konfigurált üzenetet nem találtam a szerver "
-                    "szöveges csatornái között.",
+                    "csatornái között.",
                     message_config.message_id,
                 )
                 continue
@@ -745,6 +805,24 @@ def main() -> int:
         )
         command_prefix = DEFAULT_PREFIX
 
+    try:
+        allowed_user_ids = frozenset(
+            int(part)
+            for part in os.getenv("ALLOWED_USER_IDS", "").replace(" ", "").split(",")
+            if part
+        )
+    except ValueError:
+        log.error(
+            "Hibás ALLOWED_USER_IDS a .env fájlban. Vesszővel elválasztott "
+            "Discord user ID-kat adj meg, pl.: 123456789012345678,234567890123456789"
+        )
+        return 1
+    if not allowed_user_ids:
+        log.warning(
+            "Az ALLOWED_USER_IDS nincs megadva a .env fájlban, így senki sem "
+            "használhatja a reaction-role parancsokat."
+        )
+
     config_path = Path(os.getenv("CONFIG_PATH", DEFAULT_CONFIG_PATH))
     try:
         config = load_config(config_path)
@@ -758,7 +836,7 @@ def main() -> int:
         sum(len(guild.messages) for guild in config.guilds.values()),
     )
 
-    bot = ReactionRoleBot(config, config_path, command_prefix)
+    bot = ReactionRoleBot(config, config_path, command_prefix, allowed_user_ids)
     try:
         bot.run(token, log_handler=None)
     except discord.LoginFailure:

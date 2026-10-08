@@ -95,6 +95,7 @@ BOT_PREFIX=!
 | `DISCORD_TOKEN` | igen     | –             | A bot tokenje a Developer Portalról.                                     |
 | `BOT_PREFIX`    | nem      | `!`           | A prefix parancsok előtagja (pl. `!help`, `?help`).                       |
 | `CONFIG_PATH`   | nem      | `config.json` | A reaction role konfigurációs fájl elérési útja (a `bot.py` mappájához képest). |
+| `ALLOWED_USER_IDS` | igen  | –             | Vesszővel elválasztott Discord user ID-k, akik a `reaction-role` parancsokat használhatják. |
 
 - Ha a `DISCORD_TOKEN` hiányzik, a bot el sem indul, és hibát ír a konzolra.
 - Ha a `BOT_PREFIX` üres vagy hiányzik, a bot figyelmeztet, és a `!` prefixet használja.
@@ -195,7 +196,7 @@ További hasznos parancsok:
 | `/reaction-role remove message_id emoji`                  | Emoji → role páros törlése.                                   |
 | `/reaction-role reload`                                   | A `config.json` újraolvasása újraindítás nélkül.              |
 
-A `reaction-role` parancsokhoz **Manage Server** jogosultság kell.
+A `reaction-role` parancsokat csak az `ALLOWED_USER_IDS`-ben megadott felhasználók használhatják, bármelyik csatornában. A célüzenet is lehet bármelyik csatornában (szöveges, hang-, stage csatorna chatje, thread, fórumposzt), amit a bot lát.
 
 ## Indítás
 
