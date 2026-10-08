@@ -19,8 +19,6 @@ from utils.emoji import emoji_key, parse_emoji
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = BASE_DIR / "config.json"
-TOKEN_PLACEHOLDER = "ide_jon_a_token"
-DEFAULT_PREFIX = "!"
 
 log = logging.getLogger("reaction_roles")
 
